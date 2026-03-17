@@ -75,20 +75,29 @@ def handle_500(e):
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
+@app.before_request
+def log_request_info():
+    app.logger.debug('Headers: %s', request.headers)
+    app.logger.debug('Body: %s', request.get_data())
+
 def get_flow(redirect_uri=None):
     """Create OAuth2 flow."""
     # Priority 1: Use provided redirect URI
     # Priority 2: Use local fallback
     uri = redirect_uri or "http://127.0.0.1:5000/oauth2callback"
     
-    # Render often uses HTTPS by default, make sure URI matches
-    if os.environ.get("RENDER") and uri.startswith("http://"):
+    # Force HTTPS on Render to avoid NS_BINDING_ABORTED / Mixed Content issues
+    if (os.environ.get("RENDER") or os.environ.get("FORCE_HTTPS")) and uri.startswith("http://"):
         uri = uri.replace("http://", "https://", 1)
+        app.logger.info(f"Forcing HTTPS redirect URI: {uri}")
 
     # Priority 1: GOOGLE_CLIENT_SECRET_JSON environment variable (Safest for Render)
     env_secret = os.environ.get("GOOGLE_CLIENT_SECRET_JSON")
     if env_secret:
+        app.logger.info("Found GOOGLE_CLIENT_SECRET_JSON in environment.")
         try:
+            # Strip whitespace to avoid common copy-paste errors
+            env_secret = env_secret.strip()
             client_config = json.loads(env_secret)
             return Flow.from_client_config(
                 client_config,
@@ -96,21 +105,25 @@ def get_flow(redirect_uri=None):
                 redirect_uri=uri
             )
         except Exception as e:
-            app.logger.error(f"Error parsing GOOGLE_CLIENT_SECRET_JSON: {e}")
-            # Fall back to file if parsing fails
+            app.logger.error(f"FATAL: Error parsing GOOGLE_CLIENT_SECRET_JSON environment variable: {e}")
+            raise ValueError(f"Invalid GOOGLE_CLIENT_SECRET_JSON format: {str(e)}")
     
     # Priority 2: Use local file (fallback)
     if os.path.exists(CLIENT_SECRET_FILE):
+        app.logger.info(f"Using client secret from local file: {CLIENT_SECRET_FILE}")
         return Flow.from_client_secrets_file(
             CLIENT_SECRET_FILE,
             scopes=SCOPES,
             redirect_uri=uri
         )
     
-    raise FileNotFoundError(
+    error_msg = (
         "Google Client Secret not found. Please set 'GOOGLE_CLIENT_SECRET_JSON' "
-        "env var in Render or ensure the JSON file is in the backend/ folder."
+        "env var in Render with the FULL JSON content, or ensure the JSON file "
+        "is correctly uploaded to the backend/ folder."
     )
+    app.logger.error(error_msg)
+    raise FileNotFoundError(error_msg)
 
 # ========================
 # API Routes
