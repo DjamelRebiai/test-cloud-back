@@ -89,15 +89,31 @@ def get_flow(redirect_uri=None):
     # Force HTTPS on Render to avoid NS_BINDING_ABORTED / Mixed Content issues
     if (os.environ.get("RENDER") or os.environ.get("FORCE_HTTPS")) and uri.startswith("http://"):
         uri = uri.replace("http://", "https://", 1)
-        app.logger.info(f"Forcing HTTPS redirect URI: {uri}")
+        print(f"DEBUG: Forcing HTTPS redirect URI: {uri}")
 
     # Priority 1: GOOGLE_CLIENT_SECRET_JSON environment variable (Safest for Render)
-    env_secret = os.environ.get("GOOGLE_CLIENT_SECRET_JSON")
+    # Fuzzy check: look for any key that contains GOOGLE and SECRET in case of typos
+    target_key = "GOOGLE_CLIENT_SECRET_JSON"
+    env_secret = os.environ.get(target_key)
+    
+    if not env_secret:
+        print(f"DEBUG: '{target_key}' not found directly. Checking for typos...")
+        available_keys = [k for k in os.environ.keys() if "GOOGLE" in k.upper() or "SECRET" in k.upper()]
+        print(f"DEBUG: Potentially relevant environment keys found: {available_keys}")
+        for key in available_keys:
+            if "GOOGLE" in key.upper() and "SECRET" in key.upper():
+                print(f"DEBUG: Found likely secret key: '{key}' instead of '{target_key}'")
+                env_secret = os.environ.get(key)
+                break
+
     if env_secret:
-        app.logger.info("Found GOOGLE_CLIENT_SECRET_JSON in environment.")
+        print(f"DEBUG: Found secret in environment.")
         try:
-            # Strip whitespace to avoid common copy-paste errors
             env_secret = env_secret.strip()
+            # If the secret is wrapped in quotes (common mistake), remove them
+            if len(env_secret) >= 2 and env_secret.startswith('"') and env_secret.endswith('"'):
+                env_secret = env_secret[1:len(env_secret)-1].replace('\\"', '"')
+            
             client_config = json.loads(env_secret)
             return Flow.from_client_config(
                 client_config,
@@ -105,24 +121,31 @@ def get_flow(redirect_uri=None):
                 redirect_uri=uri
             )
         except Exception as e:
-            app.logger.error(f"FATAL: Error parsing GOOGLE_CLIENT_SECRET_JSON environment variable: {e}")
-            raise ValueError(f"Invalid GOOGLE_CLIENT_SECRET_JSON format: {str(e)}")
+            print(f"FATAL: Error parsing secret from environment: {e}")
+            raise ValueError(f"Invalid environment secret format: {str(e)}")
     
     # Priority 2: Use local file (fallback)
+    print(f"DEBUG: Checking for file at: {CLIENT_SECRET_FILE}")
     if os.path.exists(CLIENT_SECRET_FILE):
-        app.logger.info(f"Using client secret from local file: {CLIENT_SECRET_FILE}")
+        print(f"DEBUG: Using client secret from local file.")
         return Flow.from_client_secrets_file(
             CLIENT_SECRET_FILE,
             scopes=SCOPES,
             redirect_uri=uri
         )
     
+    # Diagnostic: list current directory files
+    try:
+        files = os.listdir(os.getcwd())
+        print(f"DEBUG: Current directory files: {files}")
+    except:
+        pass
+
     error_msg = (
         "Google Client Secret not found. Please set 'GOOGLE_CLIENT_SECRET_JSON' "
-        "env var in Render with the FULL JSON content, or ensure the JSON file "
-        "is correctly uploaded to the backend/ folder."
+        "env var in Render with the FULL JSON content."
     )
-    app.logger.error(error_msg)
+    print(f"ERROR: {error_msg}")
     raise FileNotFoundError(error_msg)
 
 # ========================
