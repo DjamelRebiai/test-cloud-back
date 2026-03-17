@@ -41,20 +41,34 @@ except Exception as e:
 # ========================
 # Google OAuth2 Config
 # ========================
-# Path to your client_secret file
-CLIENT_SECRET_FILE = os.path.join(
-    os.path.dirname(BASE_DIR), # Look in root folder as shown in screenshot
-    "client_secret_857155392670-go17su8hn4pfhts5iiqf733gi61g8hfm.apps.googleusercontent.com.json"
-)
+# Path resolution: find client_secret file in same folder or parent
+FILE_NAME = "client_secret_857155392670-go17su8hn4pfhts5iiqf733gi61g8hfm.apps.googleusercontent.com.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# If not found in root, look in same folder as app.py
+# Try current folder first (standard for Render deployment)
+CLIENT_SECRET_FILE = os.path.join(BASE_DIR, FILE_NAME)
+
+# Try parent folder (for local testing structure)
 if not os.path.exists(CLIENT_SECRET_FILE):
-    CLIENT_SECRET_FILE = os.path.join(BASE_DIR, os.path.basename(CLIENT_SECRET_FILE))
+    CLIENT_SECRET_FILE = os.path.join(os.path.dirname(BASE_DIR), FILE_NAME)
+
+print(f"Using client secret from: {CLIENT_SECRET_FILE}")
+
+# Custom error handler for better debugging on Render
+@app.errorhandler(500)
+def handle_500(e):
+    import traceback
+    error_msg = traceback.format_exc()
+    print(f"Server Error:\n{error_msg}")
+    return f"<h2>Server Error (500)</h2><pre>{error_msg}</pre>", 500
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 def get_flow(redirect_uri=None):
     """Create OAuth2 flow."""
+    if not os.path.exists(CLIENT_SECRET_FILE):
+        raise FileNotFoundError(f"Google Client Secret file not found at: {CLIENT_SECRET_FILE}. Please ensure it is uploaded to the 'backend/' folder on Render.")
+    
     # Priority 1: Use Render redirect URI if specified
     # Priority 2: Use local fallback
     uri = redirect_uri or "http://127.0.0.1:5000/oauth2callback"
