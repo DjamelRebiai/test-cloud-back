@@ -95,16 +95,18 @@ def get_flow(redirect_uri=None):
 
     diagnostics = {
         "target_key": "GOOGLE_CLIENT_SECRET_JSON",
-        "relevant_env_keys": [],
-        "files_in_cwd": os.listdir(os.getcwd()) if os.path.exists(os.getcwd()) else []
+        "all_env_keys": sorted(list(os.environ.keys())),
+        "files_in_cwd": os.listdir(os.getcwd()) if os.path.exists(os.getcwd()) else [],
+        "python_version": os.sys.version,
+        "is_render": os.environ.get("RENDER", "False")
     }
 
     target_key = str(diagnostics["target_key"])
     env_secret = os.environ.get(target_key)
     
     if not env_secret:
-        relevant_keys = [k for k in os.environ.keys() if "GOOGLE" in k.upper() or "SECRET" in k.upper()]
-        diagnostics["relevant_env_keys"] = relevant_keys
+        relevant_keys = [k for k in diagnostics["all_env_keys"] if "GOOGLE" in k.upper() or "SECRET" in k.upper()]
+        diagnostics["relevant_env_info"] = f"Found {len(relevant_keys)} keys: {relevant_keys}"
         for key in relevant_keys:
             if "GOOGLE" in key.upper() and "SECRET" in key.upper():
                 env_secret = os.environ.get(key)
