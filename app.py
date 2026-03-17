@@ -80,73 +80,56 @@ def log_request_info():
     app.logger.debug('Headers: %s', request.headers)
     app.logger.debug('Body: %s', request.get_data())
 
+class ConfigurationError(Exception):
+    def __init__(self, message, diagnostics=None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
+
 def get_flow(redirect_uri=None):
     """Create OAuth2 flow."""
-    # Priority 1: Use provided redirect URI
-    # Priority 2: Use local fallback
     uri = redirect_uri or "http://127.0.0.1:5000/oauth2callback"
     
-    # Force HTTPS on Render to avoid NS_BINDING_ABORTED / Mixed Content issues
     if (os.environ.get("RENDER") or os.environ.get("FORCE_HTTPS")) and uri.startswith("http://"):
         uri = uri.replace("http://", "https://", 1)
         print(f"DEBUG: Forcing HTTPS redirect URI: {uri}")
 
-    # Priority 1: GOOGLE_CLIENT_SECRET_JSON environment variable (Safest for Render)
-    # Fuzzy check: look for any key that contains GOOGLE and SECRET in case of typos
-    target_key = "GOOGLE_CLIENT_SECRET_JSON"
+    diagnostics = {
+        "target_key": "GOOGLE_CLIENT_SECRET_JSON",
+        "relevant_env_keys": [],
+        "files_in_cwd": os.listdir(os.getcwd()) if os.path.exists(os.getcwd()) else []
+    }
+
+    target_key = str(diagnostics["target_key"])
     env_secret = os.environ.get(target_key)
     
     if not env_secret:
-        print(f"DEBUG: '{target_key}' not found directly. Checking for typos...")
-        available_keys = [k for k in os.environ.keys() if "GOOGLE" in k.upper() or "SECRET" in k.upper()]
-        print(f"DEBUG: Potentially relevant environment keys found: {available_keys}")
-        for key in available_keys:
+        relevant_keys = [k for k in os.environ.keys() if "GOOGLE" in k.upper() or "SECRET" in k.upper()]
+        diagnostics["relevant_env_keys"] = relevant_keys
+        for key in relevant_keys:
             if "GOOGLE" in key.upper() and "SECRET" in key.upper():
-                print(f"DEBUG: Found likely secret key: '{key}' instead of '{target_key}'")
                 env_secret = os.environ.get(key)
+                diagnostics["found_via_fuzzy"] = key
                 break
 
     if env_secret:
-        print(f"DEBUG: Found secret in environment.")
         try:
             env_secret = env_secret.strip()
             # If the secret is wrapped in quotes (common mistake), remove them
             if len(env_secret) >= 2 and env_secret.startswith('"') and env_secret.endswith('"'):
-                env_secret = env_secret[1:len(env_secret)-1].replace('\\"', '"')
+                env_secret = env_secret[1:-1].replace('\\"', '"')
             
             client_config = json.loads(env_secret)
-            return Flow.from_client_config(
-                client_config,
-                scopes=SCOPES,
-                redirect_uri=uri
-            )
+            return Flow.from_client_config(client_config, scopes=SCOPES, redirect_uri=uri)
         except Exception as e:
-            print(f"FATAL: Error parsing secret from environment: {e}")
-            raise ValueError(f"Invalid environment secret format: {str(e)}")
+            raise ConfigurationError(f"Invalid environment secret format: {str(e)}", diagnostics)
     
-    # Priority 2: Use local file (fallback)
-    print(f"DEBUG: Checking for file at: {CLIENT_SECRET_FILE}")
     if os.path.exists(CLIENT_SECRET_FILE):
-        print(f"DEBUG: Using client secret from local file.")
-        return Flow.from_client_secrets_file(
-            CLIENT_SECRET_FILE,
-            scopes=SCOPES,
-            redirect_uri=uri
-        )
+        return Flow.from_client_secrets_file(CLIENT_SECRET_FILE, scopes=SCOPES, redirect_uri=uri)
     
-    # Diagnostic: list current directory files
-    try:
-        files = os.listdir(os.getcwd())
-        print(f"DEBUG: Current directory files: {files}")
-    except:
-        pass
-
-    error_msg = (
-        "Google Client Secret not found. Please set 'GOOGLE_CLIENT_SECRET_JSON' "
-        "env var in Render with the FULL JSON content."
+    raise ConfigurationError(
+        "Google Client Secret not found. Please set 'GOOGLE_CLIENT_SECRET_JSON' env var.",
+        diagnostics
     )
-    print(f"ERROR: {error_msg}")
-    raise FileNotFoundError(error_msg)
 
 # ========================
 # API Routes
@@ -183,15 +166,11 @@ def predict():
 def login():
     """Start Google OAuth2 flow."""
     try:
-        # Construct redirect URI based on current request host
         host_url = request.host_url.rstrip('/')
-        # Check if we are on Render (which uses a proxy and might report http improperly)
         if (os.environ.get("RENDER") or os.environ.get("FORCE_HTTPS")) and host_url.startswith("http://"):
             host_url = host_url.replace("http://", "https://", 1)
         
         redirect_uri = f"{host_url}/oauth2callback"
-        app.logger.info(f"Initiating login with redirect_uri: {redirect_uri}")
-        
         flow = get_flow(redirect_uri)
         authorization_url, state = flow.authorization_url(
             access_type="offline",
@@ -201,20 +180,29 @@ def login():
         session["state"] = state
         session["code_verifier"] = flow.code_verifier
         return redirect(authorization_url)
-    except Exception as e:
-        app.logger.error(f"Login Init Error: {e}")
-        # Return JSON if it's an API call, but since this is a redirect, HTML is fine.
-        # However, let's make it very clear HTML.
+    except ConfigurationError as ce:
+        diag_html = "<ul>"
+        for k, v in ce.diagnostics.items():
+            diag_html += f"<li><b>{k}:</b> {v}</li>"
+        diag_html += "</ul>"
+        
         return f"""
         <html>
-            <body>
-                <h2>Login Initialize Error</h2>
-                <p style='color: red;'>{str(e)}</p>
+            <body style="font-family: sans-serif; padding: 20px;">
+                <h2 style="color: #d93025;">Login Configuration Error</h2>
+                <p><b>Message:</b> {str(ce)}</p>
+                <div style="background: #f1f3f4; padding: 15px; border-radius: 8px;">
+                    <h3>Diagnostic Info:</h3>
+                    {diag_html}
+                </div>
                 <hr>
-                <p><b>Tip:</b> Make sure you have set the <code>GOOGLE_CLIENT_SECRET_JSON</code> environment variable in your Render dashboard.</p>
+                <p><b>How to fix:</b> Go to Render Dashboard -> Environment. Ensure you have a variable named <code>GOOGLE_CLIENT_SECRET_JSON</code> with the full JSON content from your client_secret file.</p>
             </body>
         </html>
         """, 500
+    except Exception as e:
+        app.logger.error(f"Login Init Error: {e}")
+        return f"<h2>Unexpected Error</h2><p>{str(e)}</p>", 500
 
 @app.route("/oauth2callback")
 def oauth2callback():
