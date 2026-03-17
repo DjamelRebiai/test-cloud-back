@@ -162,10 +162,12 @@ def login():
     try:
         # Construct redirect URI based on current request host
         host_url = request.host_url.rstrip('/')
-        if os.environ.get("RENDER") and host_url.startswith("http://"):
+        # Check if we are on Render (which uses a proxy and might report http improperly)
+        if (os.environ.get("RENDER") or os.environ.get("FORCE_HTTPS")) and host_url.startswith("http://"):
             host_url = host_url.replace("http://", "https://", 1)
         
         redirect_uri = f"{host_url}/oauth2callback"
+        app.logger.info(f"Initiating login with redirect_uri: {redirect_uri}")
         
         flow = get_flow(redirect_uri)
         authorization_url, state = flow.authorization_url(
@@ -177,7 +179,19 @@ def login():
         session["code_verifier"] = flow.code_verifier
         return redirect(authorization_url)
     except Exception as e:
-        return f"<h2>Login Initialize Error</h2><p>{str(e)}</p>", 500
+        app.logger.error(f"Login Init Error: {e}")
+        # Return JSON if it's an API call, but since this is a redirect, HTML is fine.
+        # However, let's make it very clear HTML.
+        return f"""
+        <html>
+            <body>
+                <h2>Login Initialize Error</h2>
+                <p style='color: red;'>{str(e)}</p>
+                <hr>
+                <p><b>Tip:</b> Make sure you have set the <code>GOOGLE_CLIENT_SECRET_JSON</code> environment variable in your Render dashboard.</p>
+            </body>
+        </html>
+        """, 500
 
 @app.route("/oauth2callback")
 def oauth2callback():
